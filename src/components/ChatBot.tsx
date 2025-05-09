@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { MessageCircle, Bot, SendHorizontal } from 'lucide-react';
 
-// Define the knowledge base (you can replace this with your own data)
+// Define the knowledge base (customizable)
 const knowledgeBase = [
   {
     question: "Do you offer free shipping?",
@@ -33,16 +33,162 @@ interface Message {
   isUser: boolean;
 }
 
+// Type for word prediction
+interface WordPrediction {
+  word: string;
+  confidence: number;
+}
+
 const ChatBot = () => {
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([
     { text: "Hello! How can I help you today?", isUser: false }
   ]);
   const [input, setInput] = useState("");
+  const [predictions, setPredictions] = useState<WordPrediction[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [userPhrases, setUserPhrases] = useState<string[]>([]);
 
   const toggleChat = () => {
     setIsOpen(!isOpen);
+  };
+
+  // Enhanced algorithm for more efficient matching
+  const findBestResponse = (userInput: string) => {
+    if (!userInput) return null;
+    
+    const userWords = userInput.toLowerCase().split(" ");
+    
+    // Score each item in the knowledge base
+    let bestMatch = {
+      answer: "",
+      score: 0
+    };
+    
+    knowledgeBase.forEach(item => {
+      const questionWords = item.question.toLowerCase().split(" ");
+      
+      // Calculate word match score
+      let score = 0;
+      userWords.forEach(word => {
+        if (word.length <= 2) return; // Skip very short words
+        
+        if (item.question.toLowerCase().includes(word.toLowerCase())) {
+          score += 3; // Exact word match
+        }
+        
+        // Find similar words (simple stemming)
+        questionWords.forEach(qWord => {
+          if (qWord.length > 3 && word.length > 3) {
+            if (qWord.startsWith(word) || word.startsWith(qWord)) {
+              score += 1; // Partial word match
+            }
+          }
+        });
+      });
+      
+      // Check for consecutive word matches (phrases)
+      for (let i = 0; i < userWords.length - 1; i++) {
+        const twoWordPhrase = `${userWords[i]} ${userWords[i+1]}`.toLowerCase();
+        if (item.question.toLowerCase().includes(twoWordPhrase)) {
+          score += 5; // Phrase match bonus
+        }
+      }
+      
+      // Context-based scoring
+      if (userInput.includes("?")) score += 1; // Question mark bonus
+      
+      // Update best match if current score is higher
+      if (score > bestMatch.score) {
+        bestMatch = {
+          answer: item.answer,
+          score: score
+        };
+      }
+    });
+    
+    // Only return a match if it has a minimum confidence score
+    return bestMatch.score >= 3 ? bestMatch.answer : null;
+  };
+
+  // Function to predict next word based on input
+  const predictNextWords = (text: string) => {
+    if (!text.trim()) {
+      setPredictions([]);
+      return;
+    }
+    
+    const words = text.toLowerCase().split(" ");
+    const lastWord = words[words.length - 1];
+    
+    // Build prediction models from knowledge base and past user inputs
+    let wordFrequencyMap: Record<string, number> = {};
+    let nextWordMap: Record<string, Record<string, number>> = {};
+    
+    // Add knowledge base data to prediction model
+    knowledgeBase.forEach(item => {
+      const questionWords = item.question.toLowerCase().split(" ");
+      
+      questionWords.forEach((word, index) => {
+        // Count word frequencies
+        wordFrequencyMap[word] = (wordFrequencyMap[word] || 0) + 1;
+        
+        // Map next words
+        if (index < questionWords.length - 1) {
+          if (!nextWordMap[word]) nextWordMap[word] = {};
+          const nextWord = questionWords[index + 1];
+          nextWordMap[word][nextWord] = (nextWordMap[word][nextWord] || 0) + 1;
+        }
+      });
+    });
+    
+    // Add user's past messages to the model
+    userPhrases.forEach(phrase => {
+      const phraseWords = phrase.toLowerCase().split(" ");
+      
+      phraseWords.forEach((word, index) => {
+        wordFrequencyMap[word] = (wordFrequencyMap[word] || 0) + 1;
+        
+        if (index < phraseWords.length - 1) {
+          if (!nextWordMap[word]) nextWordMap[word] = {};
+          const nextWord = phraseWords[index + 1];
+          nextWordMap[word][nextWord] = (nextWordMap[word][nextWord] || 0) + 1;
+        }
+      });
+    });
+    
+    // Generate predictions
+    let possibleNextWords: WordPrediction[] = [];
+    
+    if (nextWordMap[lastWord]) {
+      // Get next words based on last word
+      Object.entries(nextWordMap[lastWord]).forEach(([word, count]) => {
+        possibleNextWords.push({
+          word,
+          confidence: count
+        });
+      });
+    }
+    
+    // If no specific next words, suggest common words
+    if (possibleNextWords.length === 0) {
+      Object.entries(wordFrequencyMap)
+        .filter(([word]) => word.startsWith(lastWord) && word !== lastWord)
+        .forEach(([word, count]) => {
+          possibleNextWords.push({
+            word,
+            confidence: count
+          });
+        });
+    }
+    
+    // Sort by confidence and take top 3
+    const topPredictions = possibleNextWords
+      .sort((a, b) => b.confidence - a.confidence)
+      .slice(0, 3);
+      
+    setPredictions(topPredictions);
   };
 
   const handleSend = () => {
@@ -52,25 +198,25 @@ const ChatBot = () => {
     const userMessage = { text: input.trim(), isUser: true };
     setMessages([...messages, userMessage]);
     
-    // Find response from knowledge base or use default
-    const lowerInput = input.toLowerCase();
-    const response = knowledgeBase.find(item => 
-      item.question.toLowerCase().includes(lowerInput) || 
-      lowerInput.includes(item.question.toLowerCase().split(" ").filter(word => word.length > 3).join(" "))
-    );
+    // Store user phrase for future predictions
+    setUserPhrases(prev => [...prev, input.trim()]);
+    
+    // Find response using enhanced algorithm
+    const response = findBestResponse(input);
 
     setTimeout(() => {
       if (response) {
-        setMessages(prev => [...prev, { text: response.answer, isUser: false }]);
+        setMessages(prev => [...prev, { text: response, isUser: false }]);
       } else {
         setMessages(prev => [...prev, { 
           text: "I'm sorry, I don't have information about that. Can I help you with something else?", 
           isUser: false 
         }]);
       }
-    }, 500);
+    }, 300);
     
     setInput("");
+    setPredictions([]);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -79,9 +225,23 @@ const ChatBot = () => {
     }
   };
 
+  // Update predictions as user types
+  useEffect(() => {
+    predictNextWords(input);
+  }, [input]);
+
+  // Scroll to bottom of chat
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Apply a word prediction
+  const applyPrediction = (word: string) => {
+    const words = input.split(" ");
+    words.pop(); // Remove last partial word
+    setInput([...words, word, ""].join(" ")); // Add prediction with space
+    inputRef.current?.focus();
+  };
 
   return (
     <div className="fixed bottom-6 right-6 z-50">
@@ -142,9 +302,25 @@ const ChatBot = () => {
             ))}
           </div>
           
-          <div className="p-3 border-t border-border bg-card">
+          <div className="p-3 border-t border-border bg-card flex flex-col gap-2">
+            {predictions.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-2">
+                {predictions.map((pred, index) => (
+                  <Button 
+                    key={index} 
+                    variant="outline" 
+                    size="sm" 
+                    className="text-xs py-0 h-6"
+                    onClick={() => applyPrediction(pred.word)}
+                  >
+                    {pred.word}
+                  </Button>
+                ))}
+              </div>
+            )}
             <div className="flex gap-2">
               <Input
+                ref={inputRef}
                 placeholder="Type your question..."
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
